@@ -1,0 +1,79 @@
+#!/bin/bash
+
+bldit() {
+    set -e
+
+    # Attempt to grab the repository name from the git remote, fallback to VSCodium/vscodium
+    REPO=$(git config --get remote.origin.url | sed -E 's/.*github\.com[\/:]//' | sed 's/\.git$//')
+    if [ -z "$REPO" ]; then
+        REPO="VSCodium/vscodium"
+    fi
+
+    echo "Fetching latest release data from GitHub API for $REPO..."
+    # Query the GitHub API for the latest release and find the codium-glass-linux-x64.tar.gz asset
+    DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.assets[] | select(.name | endswith("linux-x64.tar.gz")) | .browser_download_url' | head -n 1)
+
+    if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+        echo "Error: Could not find a suitable linux-x64 tarball in the latest release."
+        exit 1
+    fi
+
+    echo "Downloading $DOWNLOAD_URL..."
+    curl -L -o codium-glass.tar.gz "$DOWNLOAD_URL"
+
+    echo "Extracting tarball..."
+    tar -xzf codium-glass.tar.gz
+
+    echo "Setting up directory structure for pkgit..."
+    mkdir -p lib bin
+
+    # Move the extracted application into lib/codium-glass
+    # Our CI workflow tars the 'VSCode-linux-x64' folder
+    if [ -d "VSCode-linux-x64" ]; then
+        mv VSCode-linux-x64 lib/codium-glass
+    else
+        echo "Error: Expected extracted folder 'VSCode-linux-x64' not found."
+        exit 1
+    fi
+
+    echo "Creating wrapper script..."
+    cat << 'EOF' > bin/codium-glass
+#!/bin/bash
+# Wrapper script to launch Codium-Glass
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+exec "$SCRIPT_DIR/../lib/codium-glass/bin/codium-glass" "$@"
+EOF
+
+    # Ensure everything is executable as needed
+    chmod +x bin/codium-glass
+
+    echo "Setting up desktop entry and icon..."
+    mkdir -p ~/.local/share/applications
+    mkdir -p ~/.local/share/icons/hicolor/scalable/apps
+
+    # Copy the custom white rounded icon we embedded in the build
+    if [ -f "lib/codium-glass/resources/app/resources/linux/code.svg" ]; then
+        cp lib/codium-glass/resources/app/resources/linux/code.svg ~/.local/share/icons/hicolor/scalable/apps/codium-glass.svg
+    fi
+
+    # Create the desktop entry pointing to the codium-glass executable
+    cat << 'EOF' > ~/.local/share/applications/codium-glass.desktop
+[Desktop Entry]
+Name=Codium-Glass
+Comment=Pluggable VSCodium fork for Wayland ricing
+GenericName=Text Editor
+Exec=codium-glass %F
+Icon=codium-glass
+Type=Application
+StartupNotify=false
+StartupWMClass=codium-glass
+Categories=TextEditor;Development;IDE;
+MimeType=text/plain;inode/directory;
+Keywords=vscodium;codium;vscode;glass;
+EOF
+
+    echo "Cleaning up..."
+    rm codium-glass.tar.gz
+
+    echo "Build completed successfully!"
+}

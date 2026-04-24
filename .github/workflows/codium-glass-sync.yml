@@ -1,0 +1,181 @@
+name: Codium-Glass Sync & Build
+
+on:
+  schedule:
+    # Run daily at 04:00 UTC
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      force_build:
+        type: boolean
+        description: Force build even if no new upstream release
+        default: false
+
+env:
+  APP_NAME: Codium-Glass
+  BINARY_NAME: codium-glass
+  OS_NAME: linux
+  VSCODE_QUALITY: stable
+  VSCODE_ARCH: x64
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync-and-build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Codium-Glass repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Setup Python 3
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: sudo apt-get update -y && sudo apt-get install -y libkrb5-dev jq
+
+      - name: Clone VS Code upstream
+        run: ./get_repo.sh
+
+      # ── Apply Codium-Glass patches with conflict detection ──
+      - name: Apply patches
+        id: apply_patches
+        run: |
+          set -e
+          cd vscode || exit 1
+
+          # Source utilities for apply_patch function
+          . ../utils.sh
+
+          FAILED_PATCHES=""
+          PATCH_SUCCESS=true
+
+          # Apply all standard patches first
+          for file in ../patches/*.patch; do
+            if [[ -f "${file}" ]]; then
+              echo "::group::Applying $(basename "${file}")"
+              if ! git apply --ignore-whitespace --check "${file}" 2>/dev/null; then
+                echo "::error::Patch failed pre-check: ${file}"
+                FAILED_PATCHES="${FAILED_PATCHES}  - $(basename "${file}")\n"
+                PATCH_SUCCESS=false
+              else
+                apply_patch "${file}"
+                echo "✅ Applied: $(basename "${file}")"
+              fi
+              echo "::endgroup::"
+            fi
+          done
+
+          # Apply OS-specific patches
+          if [[ -d "../patches/${OS_NAME}/" ]]; then
+            for file in "../patches/${OS_NAME}/"*.patch; do
+              if [[ -f "${file}" ]]; then
+                echo "::group::Applying $(basename "${file}") [${OS_NAME}]"
+                if ! git apply --ignore-whitespace --check "${file}" 2>/dev/null; then
+                  echo "::error::Patch failed pre-check: ${file}"
+                  FAILED_PATCHES="${FAILED_PATCHES}  - $(basename "${file}") [${OS_NAME}]\n"
+                  PATCH_SUCCESS=false
+                else
+                  apply_patch "${file}"
+                  echo "✅ Applied: $(basename "${file}")"
+                fi
+                echo "::endgroup::"
+              fi
+            done
+          fi
+
+          # Apply user patches
+          for file in ../patches/user/*.patch; do
+            if [[ -f "${file}" ]]; then
+              echo "::group::Applying $(basename "${file}") [user]"
+              if ! git apply --ignore-whitespace --check "${file}" 2>/dev/null; then
+                echo "::error::Patch failed pre-check: ${file}"
+                FAILED_PATCHES="${FAILED_PATCHES}  - $(basename "${file}") [user]\n"
+                PATCH_SUCCESS=false
+              else
+                apply_patch "${file}"
+                echo "✅ Applied: $(basename "${file}")"
+              fi
+              echo "::endgroup::"
+            fi
+          done
+
+          echo "patch_success=${PATCH_SUCCESS}" >> "$GITHUB_OUTPUT"
+          echo "failed_patches<<EOF" >> "$GITHUB_OUTPUT"
+          echo -e "${FAILED_PATCHES}" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      # ── Alert on patch failure ──
+      - name: Create issue on patch conflict
+        if: steps.apply_patches.outputs.patch_success == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UPSTREAM_TAG=$(jq -r '.tag' ./upstream/stable.json)
+          gh issue create \
+            --title "🚨 Codium-Glass patch conflict on upstream ${UPSTREAM_TAG}" \
+            --label "patch-conflict" \
+            --assignee "${{ github.repository_owner }}" \
+            --body "## Patch Application Failure
+
+          The daily sync workflow detected that one or more Codium-Glass patches
+          failed to apply against VS Code upstream tag \`${UPSTREAM_TAG}\`.
+
+          **Failed patches:**
+          ${{ steps.apply_patches.outputs.failed_patches }}
+
+          **Action required:** Manual rebase of the affected patches is needed.
+
+          ---
+          *Workflow run:* [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          *Triggered at:* $(date -u '+%Y-%m-%d %H:%M UTC')"
+
+      - name: Abort on patch failure
+        if: steps.apply_patches.outputs.patch_success == 'false'
+        run: |
+          echo "::error::One or more patches failed to apply. An issue has been created."
+          exit 1
+
+      # ── Build ──
+      - name: Setup GCC
+        uses: egor-tensin/setup-gcc@v1
+        with:
+          version: 10
+          platform: x64
+
+      - name: Build Codium-Glass
+        env:
+          SHOULD_BUILD: yes
+          SHOULD_BUILD_REH: no
+          SHOULD_BUILD_REH_WEB: no
+          CI_BUILD: no
+          DISABLE_UPDATE: yes
+        run: ./build.sh
+
+      - name: Prepare assets
+        run: |
+          if [[ -d "VSCode-linux-x64" ]]; then
+            tar -czf codium-glass-linux-x64.tar.gz VSCode-linux-x64/
+            echo "✅ Binary archive created"
+          else
+            echo "::warning::Build output directory not found"
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codium-glass-linux-x64
+          path: codium-glass-linux-x64.tar.gz
+          retention-days: 14
+        if: hashFiles('codium-glass-linux-x64.tar.gz') != ''

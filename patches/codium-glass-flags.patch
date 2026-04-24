@@ -1,0 +1,44 @@
+diff --git a/src/main.ts b/src/main.ts
+index 42f599c9b37..eb039e669c7 100644
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -143,6 +143,39 @@ if (process.platform === 'win32' || process.platform === 'linux') {
+ 	app.commandLine.appendSwitch('lang', electronLocale);
+ }
+ 
++// Codium-Glass: Load user-defined Electron command-line flags.
++// Reads ~/.config/codium-glass/electron-flags.conf and applies each flag
++// via app.commandLine.appendSwitch() before the app 'ready' event.
++// This enables Wayland/SwayFX users to pass --ozone-platform=wayland, etc.
++(function loadCodiumGlassElectronFlags() {
++	const codiumGlassConf = path.join(os.homedir(), '.config', 'codium-glass', 'electron-flags.conf');
++	try {
++		if (fs.existsSync(codiumGlassConf)) {
++			const content = fs.readFileSync(codiumGlassConf, 'utf-8');
++			for (const rawLine of content.split('\n')) {
++				const line = rawLine.trim();
++				// Skip empty lines and comments
++				if (!line || line.startsWith('#')) {
++					continue;
++				}
++				// Strip leading '--' if present
++				const flag = line.startsWith('--') ? line.substring(2) : line;
++				const eqIndex = flag.indexOf('=');
++				if (eqIndex !== -1) {
++					const key = flag.substring(0, eqIndex).trim();
++					const value = flag.substring(eqIndex + 1).trim();
++					app.commandLine.appendSwitch(key, value);
++				} else {
++					app.commandLine.appendSwitch(flag.trim());
++				}
++			}
++			console.log(`[codium-glass] Loaded electron flags from ${codiumGlassConf}`);
++		}
++	} catch (error) {
++		console.warn(`[codium-glass] Failed to load electron flags from ${codiumGlassConf}: ${error}`);
++	}
++})();
++
+ // Load our code once ready
+ app.once('ready', function () {
+ 	if (args['trace']) {

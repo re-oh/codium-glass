@@ -1,0 +1,48 @@
+diff --git a/src/vs/platform/windows/electron-main/windowImpl.ts b/src/vs/platform/windows/electron-main/windowImpl.ts
+index 07551319546..fe0f69cd80b 100644
+--- a/src/vs/platform/windows/electron-main/windowImpl.ts
++++ b/src/vs/platform/windows/electron-main/windowImpl.ts
+@@ -4,6 +4,8 @@
+  *--------------------------------------------------------------------------------------------*/
+ 
+ import electron, { BrowserWindowConstructorOptions, Display, screen } from 'electron';
++import * as nodeFs from 'fs';
++import * as nodePath from 'path';
+ import { DeferredPromise, RunOnceScheduler, timeout, Delayer } from '../../../base/common/async.js';
+ import { CancellationToken } from '../../../base/common/cancellation.js';
+ import { toErrorMessage } from '../../../base/common/errorMessage.js';
+@@ -821,6 +823,34 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
+ 		// Remember that we loaded
+ 		this._register(Event.fromNodeEventEmitter(this._win.webContents, 'did-finish-load')(() => {
+ 
++			// Codium-Glass: Inject user CSS from ~/.config/codium-glass/patches/*.css
++			// Reads CSS files from the config directory and injects them into the
++			// renderer via webContents.insertCSS(). This avoids modifying the CSP
++			// and keeps the entire patch contained in the main process.
++			(async () => {
++				try {
++					const cssPatchDir = nodePath.join(
++						(process.env.HOME || process.env.USERPROFILE || ''),
++						'.config', 'codium-glass', 'patches'
++					);
++					if (nodeFs.existsSync(cssPatchDir)) {
++						const cssFiles = nodeFs.readdirSync(cssPatchDir)
++							.filter((f: string) => f.endsWith('.css'))
++							.sort();
++						for (const file of cssFiles) {
++							const cssContent = nodeFs.readFileSync(nodePath.join(cssPatchDir, file), 'utf-8');
++							if (cssContent.trim()) {
++								await this._win.webContents.insertCSS(cssContent);
++								this.logService.info(`[codium-glass] Injected CSS: ${file}`);
++							}
++						}
++					}
++				} catch (error) {
++					this.logService.warn(`[codium-glass] Failed to inject user CSS: ${error}`);
++				}
++			})();
++
++
+ 			// Associate properties from the load request if provided
+ 			if (this.pendingLoadConfig) {
+ 				this._config = this.pendingLoadConfig;

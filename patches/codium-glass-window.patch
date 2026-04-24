@@ -1,0 +1,18 @@
+diff --git a/src/vs/platform/windows/electron-main/windows.ts b/src/vs/platform/windows/electron-main/windows.ts
+index 75bcee0c678..0a176e23580 100644
+--- a/src/vs/platform/windows/electron-main/windows.ts
++++ b/src/vs/platform/windows/electron-main/windows.ts
+@@ -239,6 +239,13 @@ export function defaultBrowserWindowOptions(accessor: ServicesAccessor, windowSt
+ 		options.alwaysOnTop = true;
+ 	}
+ 
++	// Codium-Glass: Force window transparency for compositor-driven effects.
++	// Enables blur, shadows, and rounded corners via SwayFX, Picom, Hyprland, etc.
++	// The user's compositor is responsible for rendering the window backdrop.
++	options.transparent = true;
++	options.frame = false;
++	options.backgroundColor = '#00000000';
++
+ 	return options;
+ }
+ 
