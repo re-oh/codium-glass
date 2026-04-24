@@ -19,7 +19,7 @@ env:
   VSCODE_ARCH: x64
 
 permissions:
-  contents: read
+  contents: write
   issues: write
 
 jobs:
@@ -116,6 +116,10 @@ jobs:
           echo -e "${FAILED_PATCHES}" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
+          # Reset the repo so build.sh can apply them again cleanly
+          git reset --hard HEAD
+          git clean -fd
+
       # ── Alert on patch failure ──
       - name: Create issue on patch conflict
         if: steps.apply_patches.outputs.patch_success == 'false'
@@ -172,10 +176,13 @@ jobs:
             echo "::warning::Build output directory not found"
           fi
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: codium-glass-linux-x64
-          path: codium-glass-linux-x64.tar.gz
-          retention-days: 14
-        if: hashFiles('codium-glass-linux-x64.tar.gz') != ''
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Try to delete the old rolling 'latest' release and tag so we can overwrite it
+          gh release delete latest -y || true
+          git push --delete origin latest || true
+          
+          # Create a new rolling release and upload the tarball asset
+          gh release create latest codium-glass-linux-x64.tar.gz --title "Latest Codium-Glass Build" --notes "Automated build triggered from sync workflow."
